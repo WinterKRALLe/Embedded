@@ -1,358 +1,180 @@
 #include "MKL25Z4.h"
 #include "drv_gpio.h"
 #include "drv_lcd.h"
-#include <stdio.h>
-#include <stdbool.h>
+#include "stdbool.h"
 
-#define SWITCH_PRESSED  	(1)
-#define SWITCH_NOT_PRESSED  (0)
+#define	PWM_CHANNEL_RED		(0)
+#define	PWM_CHANNEL_GREEN	(1)
+#define	PWM_CHANNEL_BLUE	(1)
 
+#define	PWM_PINNUMBER_RED	(18)
+#define	PWM_PINNUMBER_GREEN	(19)
+#define	PWM_PINNUMBER_BLUE	(1)
 
-int switch1_readw(void);
+#define SW_NEZMACKNUTO 	(0)
+#define SW_ZMACKNUTO 	(1)
 
-void switch1_init(void);
-
-int switch2_readw(void);
-
-void switch2_init(void);
-
-int switch3_readw(void);
-
-void switch3_init(void);
-
-void delay_debounce(void);
-
+void switch_init(void);
+void delay(void);
+int sw1_read(void);
+int sw2_read(void);
+int sw3_read(void);
 
 int main(void)
 {
-	uint32_t counter;
-
 	GPIO_Initialize();
-	pinMode(LD1, OUTPUT);
-	pinWrite(LD1, HIGH);
-	pinMode(LD2, OUTPUT);
-	pinWrite(LD2, HIGH);
-	pinMode(LD3, OUTPUT);
-	pinWrite(LD3, HIGH);
-	switch1_init();
+	LCD_initialize();
+	switch_init();
 
+	uint32_t tikyzaSekundu = 1;
 
-	pinMode(SW1,INPUT_PULLUP);
-	SIM->SCGC5 |= SIM_SCGC5_PORTC_MASK;
-	PORTC->PCR[2] = PORT_PCR_MUX(0);
+	SIM->SCGC5 |=  SIM_SCGC5_PORTB_MASK;
+	SIM->SCGC5 |=  SIM_SCGC5_PORTD_MASK;
 
-	pinMode(SW2,INPUT_PULLUP);
-	SIM->SCGC5 |= SIM_SCGC5_PORTC_MASK;
-	PORTC->PCR[2] = PORT_PCR_MUX(0);
-
-	pinMode(SW3,INPUT_PULLUP);
-	SIM->SCGC5 |= SIM_SCGC5_PORTC_MASK;
-	PORTC->PCR[2] = PORT_PCR_MUX(0);
-
-	SIM->SCGC6 |= (SIM_SCGC6_TPM0_MASK |SIM_SCGC6_TPM1_MASK | SIM_SCGC6_TPM2_MASK);
+	SIM->SCGC6 |= SIM_SCGC6_TPM2_MASK;
+	SIM->SCGC6 |= SIM_SCGC6_TPM0_MASK;
 
 	SIM->SOPT2 &= ~SIM_SOPT2_TPMSRC_MASK;
 	SIM->SOPT2 |= SIM_SOPT2_TPMSRC(2);
 
-
-	// Nastavit casovac
-	// Pole PS (prescale) muze byt zmeneno pouze, kdyz je
-	// citac casovace zakazan (counter disabled), tj. pokud SC[CMOD] = 0
-	// ...nejprve zakazat counter
-	TPM0->SC = TPM_SC_CMOD(0);
-
-	// ...pockat az se zmena projevi (acknowledged in the LPTPM clock domain)
-	while (TPM0->SC & TPM_SC_CMOD_MASK )
-		;
-
-
-	TPM1->SC = TPM_SC_CMOD(0);
-
-	// ...pockat az se zmena projevi (acknowledged in the LPTPM clock domain)
-	while (TPM1->SC & TPM_SC_CMOD_MASK )
-		;
-
-
 	TPM2->SC = TPM_SC_CMOD(0);
+	while (TPM2->SC & TPM_SC_CMOD_MASK );
 
-	// ...pockat az se zmena projevi (acknowledged in the LPTPM clock domain)
-	while (TPM2->SC & TPM_SC_CMOD_MASK )
-		;
+	TPM0->SC = TPM_SC_CMOD(0);
+	while (TPM0->SC & TPM_SC_CMOD_MASK );
 
-	int step0 = 100;
-	int step1 = 100;
-	int step2 = 100;
-	char buff[19];
+	TPM2->CNT = 0;
+	TPM2->MOD = 10000;
+	TPM0->CNT = 0;
+	TPM0->MOD = 10000;
 
-	// ... pri zakazanem citaci provest nastaveni modulo
-	// Pri clock = 8 MHz / 128 = 62500 Hz
-	// Pro 2 preruseni za sekundu modulo nastavit na 31250
-	TPM0->CNT = 0;	// manual doporucuje vynulovat citac
-	TPM0->MOD = step0*8000/128/2;
+	tikyzaSekundu = 100;
 
-	TPM1->CNT = 0;	// manual doporucuje vynulovat citac
-	TPM1->MOD = step1*8000/128/2;
+	TPM2->CONTROLS[PWM_CHANNEL_RED].CnSC = (TPM_CnSC_MSB_MASK | TPM_CnSC_ELSA_MASK);
+	TPM2->CONTROLS[PWM_CHANNEL_GREEN].CnSC = (TPM_CnSC_MSB_MASK | TPM_CnSC_ELSA_MASK);
+	TPM0->CONTROLS[PWM_CHANNEL_BLUE].CnSC = (TPM_CnSC_MSB_MASK | TPM_CnSC_ELSA_MASK);
 
-	TPM2->CNT = 0;	// manual doporucuje vynulovat citac
-	TPM2->MOD = step2*8000/128/2;
+	PORTB->PCR[PWM_PINNUMBER_RED] = PORT_PCR_MUX(3);
+	PORTB->PCR[PWM_PINNUMBER_GREEN] = PORT_PCR_MUX(3);
+	PORTD->PCR[PWM_PINNUMBER_BLUE] = PORT_PCR_MUX(4);
 
-	// ... a nakonec nastavit pozadovane hodnoty vcetne delicky (prescale)
-	TPM0->SC = ( TPM_SC_TOIE_MASK	// povolit preruseni
-			| TPM_SC_TOF_MASK	// smazat pripadny priznak preruseni
-			| TPM_SC_CMOD(1)	// vyber interniho zdroje hodinoveho signalu
-			| TPM_SC_PS(7) );	// delicka = 128
+	TPM2->CONTROLS[PWM_CHANNEL_RED].CnV = 10 * tikyzaSekundu;
+	TPM2->CONTROLS[PWM_CHANNEL_GREEN].CnV = 10 * tikyzaSekundu;
+	TPM0->CONTROLS[PWM_CHANNEL_BLUE].CnV = 10 * tikyzaSekundu;
 
+	TPM2->SC = ( TPM_SC_CMOD(1)	| TPM_SC_PS(3) );
+	TPM0->SC = ( TPM_SC_CMOD(1)	| TPM_SC_PS(3) );
 
-	TPM1->SC = ( TPM_SC_TOIE_MASK	// povolit preruseni
-			| TPM_SC_TOF_MASK	// smazat pripadny priznak preruseni
-			| TPM_SC_CMOD(1)	// vyber interniho zdroje hodinoveho signalu
-			| TPM_SC_PS(7) );
+	uint32_t DutyRed = 0;
+	uint32_t DutyGreen = 0;
+	uint32_t DutyBlue = 0;
+	bool directionUp = true;
 
+	int stav1;
+	int stav2;
+	int stav3;
 
-	TPM2->SC = ( TPM_SC_TOIE_MASK	// povolit preruseni
-			| TPM_SC_TOF_MASK	// smazat pripadny priznak preruseni
-			| TPM_SC_CMOD(1)	// vyber interniho zdroje hodinoveho signalu
-			| TPM_SC_PS(7) );
-
-	// Preruseni je treba povolit take v NVIC
-	// ...smazat pripadny priznak cekajiciho preruseni
-	NVIC_ClearPendingIRQ(TPM0_IRQn);
-	// ...povolit preruseni od TPM0
-	NVIC_EnableIRQ(TPM0_IRQn);
-	// ...nastavit prioritu preruseni: 0 je nejvysi, 3 nejnizsi
-	NVIC_SetPriority(TPM0_IRQn, 2);
-
-	NVIC_ClearPendingIRQ(TPM1_IRQn);
-	// ...povolit preruseni od TPM0
-	NVIC_EnableIRQ(TPM1_IRQn);
-	// ...nastavit prioritu preruseni: 0 je nejvysi, 3 nejnizsi
-	NVIC_SetPriority(TPM1_IRQn, 2);
-
-	NVIC_ClearPendingIRQ(TPM2_IRQn);
-	// ...povolit preruseni od TPM0
-	NVIC_EnableIRQ(TPM2_IRQn);
-	// ...nastavit prioritu preruseni: 0 je nejvysi, 3 nejnizsi
-	NVIC_SetPriority(TPM2_IRQn, 2);
-
-	LCD_initialize();
-	LCD_clear();
-
-
-	sprintf(buff, "LED1: %4u ms", step0);
-	LCD_set_cursor(1,1);
-	LCD_puts(buff);
-
-	sprintf(buff, "LED2: %4u ms", step1);
-	LCD_set_cursor(2,1);
-	LCD_puts(buff);
-
-	sprintf(buff, "LED3: %4u ms", step2);
-	LCD_set_cursor(3,1);
-	LCD_puts(buff);
-
-	// Nic dalsiho se v hlavni smycce programu nedeje, vse resi obsluha preruseni
 	while(1)
 	{
-		counter++;
+		char string[16];
 
+		TPM2->CONTROLS[PWM_CHANNEL_RED].CnV = DutyRed * tikyzaSekundu;
+		TPM2->CONTROLS[PWM_CHANNEL_GREEN].CnV = DutyGreen * tikyzaSekundu;
+		TPM0->CONTROLS[PWM_CHANNEL_BLUE].CnV = DutyBlue * tikyzaSekundu;
 
-		if(switch1_readw() == SWITCH_PRESSED)
-		{
-			if (step0 == 1000) step0 = 0;
-
-			step0=step0+100;
-			TPM0->MOD = step0*8000/128/2;
-
-			sprintf(buff, "LED1: %4u ms", step0);
-			LCD_set_cursor(1,1);
-			LCD_puts(buff);
+		stav1 = sw1_read();
+		if(stav1 == SW_ZMACKNUTO) {
+			if (DutyRed < 100) DutyRed +=10;
+			else DutyRed = 0;
 		}
+		sprintf(string, "RED:   %3i %%", DutyRed);
+		LCD_set_cursor(1, 1);
+		LCD_puts(string);
 
-		if(switch2_readw() == SWITCH_PRESSED)
-		{
-			if (step1 == 1000) step1 = 0;
-
-			step1=step1+100;
-			TPM1->MOD = step1*8000/128/2;
-
-			sprintf(buff, "LED2: %4u ms", step1);
-			LCD_set_cursor(2,1);
-			LCD_puts(buff);
+		stav2 = sw2_read();
+		if(stav2 == SW_ZMACKNUTO) {
+			if (DutyGreen < 100) DutyGreen +=10;
+			else DutyGreen = 0;
 		}
+		sprintf(string, "BLUE:  %3i %%", DutyGreen);
+		LCD_set_cursor(2, 1);
+		LCD_puts(string);
 
-		if(switch3_readw() == SWITCH_PRESSED)
-		{
-			if (step2 == 1000) step2 = 0;
-
-			step2=step2+100;
-			TPM2->MOD = step2*8000/128/2;
-
-			sprintf(buff, "LED3: %4u ms", step2);
-			LCD_set_cursor(3,1);
-			LCD_puts(buff);
+		stav3 = sw3_read();
+		if(stav3 == SW_ZMACKNUTO) {
+			if (DutyBlue < 100)	DutyBlue +=10;
+			else DutyBlue = 0;
 		}
+		sprintf(string, "GREEN: %3i %%", DutyBlue);
+		LCD_set_cursor(3, 1);
+		LCD_puts(string);
+
+		delay();
 	}
+
 	return 0;
 }
 
-
-void TPM0_IRQHandler(void)
+int sw1_read(void)
 {
-	// static promenna si uchova hodnotu i mezi volanimi funkce
-	static uint8_t ledSviti = 0;
-
-	// Pokud je zdrojem preruseni TOF
-	if (TPM0->SC & TPM_SC_TOF_MASK) {
-
-		// vymazat priznak preruseni
-		TPM0->SC |= TPM_SC_TOF_MASK;
-
-		// Zmenit stav LED
-		if (ledSviti) {
-			pinWrite(LD1, HIGH);	// zhasnout
-			ledSviti = 0;
-		}
-		else {
-			pinWrite(LD1, LOW);		// rozsvitit
-			ledSviti = 1;
-		}
-	}
-
-}
-
-void TPM1_IRQHandler(void)
-{
-	// static promenna si uchova hodnotu i mezi volanimi funkce
-	static uint8_t ledSviti = 0;
-
-	// Pokud je zdrojem preruseni TOF
-	if (TPM1->SC & TPM_SC_TOF_MASK) {
-
-		// vymazat priznak preruseni
-		TPM1->SC |= TPM_SC_TOF_MASK;
-
-		// Zmenit stav LED
-		if (ledSviti) {
-			pinWrite(LD2, HIGH);	// zhasnout
-			ledSviti = 0;
-		}
-		else {
-			pinWrite(LD2, LOW);		// rozsvitit
-			ledSviti = 1;
-		}
-	}
-
-}
-
-void TPM2_IRQHandler(void)
-{
-	// static promenna si uchova hodnotu i mezi volanimi funkce
-	static uint8_t ledSviti = 0;
-
-	// Pokud je zdrojem preruseni TOF
-	if (TPM2->SC & TPM_SC_TOF_MASK) {
-
-		// vymazat priznak preruseni
-		TPM2->SC |= TPM_SC_TOF_MASK;
-
-		// Zmenit stav LED
-		if (ledSviti) {
-			pinWrite(LD3, HIGH);	// zhasnout
-			ledSviti = 0;
-		}
-		else {
-			pinWrite(LD3, LOW);		// rozsvitit
-			ledSviti = 1;
-		}
-	}
-
-}
-
-
-void switch1_init(void)
-{
-	// Nastavit pin pro SW1 jako vstup s povolenym pull-up rezistorem
-	pinMode(SW1, INPUT_PULLUP);
-}
-
-/*
- switch1_readw
- Cte stav tlacitka SW1 s osetrenim zakmitu.
- Pokud je stisknuto tlacitko, ceka na uvolneni a pak
- vrati SWITCH_PRESSED.
- Pokud neni stisknuto, vrati SWITCH_NOT_PRESSED.
- */
-int switch1_readw(void)
-{
-	int switch_state = SWITCH_NOT_PRESSED;
-	if ( pinRead(SW1) == LOW )
+	int sw_state = SW_NEZMACKNUTO;
+	if (pinRead(SW1) == LOW)
 	{
-		// tlacitko je stisknuto
+		delay();
 
-		// debounce = wait
-		delay_debounce();
-
-		// znovu zkontrolovat stav tlacitka
-		if ( pinRead(SW1) == LOW )
+		if (pinRead(SW1) == LOW)
 		{
-			// cekame na uvolneni tlacitka
-			while( pinRead(SW1) == LOW )
-				;
-			switch_state = SWITCH_PRESSED;
+
+			while(pinRead(SW1) == LOW);
+			sw_state = SW_ZMACKNUTO;
 		}
 	}
-	// vratime stav tlacitka
-	return switch_state;
+	return sw_state;
 }
 
-int switch2_readw(void)
+int sw2_read(void)
 {
-	int switch_state = SWITCH_NOT_PRESSED;
-	if ( pinRead(SW2) == LOW )
+	int sw_state = SW_NEZMACKNUTO;
+	if (pinRead(SW2) == LOW)
 	{
-		// tlacitko je stisknuto
+		delay();
 
-		// debounce = wait
-		delay_debounce();
-
-		// znovu zkontrolovat stav tlacitka
-		if ( pinRead(SW2) == LOW )
+		if (pinRead(SW2) == LOW)
 		{
-			// cekame na uvolneni tlacitka
-			while( pinRead(SW2) == LOW )
-				;
-			switch_state = SWITCH_PRESSED;
+
+			while(pinRead(SW2) == LOW);
+			sw_state = SW_ZMACKNUTO;
 		}
 	}
-	// vratime stav tlacitka
-	return switch_state;
+	return sw_state;
 }
 
-int switch3_readw(void)
+int sw3_read(void)
 {
-	int switch_state = SWITCH_NOT_PRESSED;
-	if ( pinRead(SW3) == LOW )
+	int sw_stav = SW_NEZMACKNUTO;
+	if (pinRead(SW3) == LOW)
 	{
-		// tlacitko je stisknuto
+		delay();
 
-		// debounce = wait
-		delay_debounce();
-
-		// znovu zkontrolovat stav tlacitka
-		if ( pinRead(SW3) == LOW )
+		if (pinRead(SW3) == LOW)
 		{
-			// cekame na uvolneni tlacitka
-			while( pinRead(SW3) == LOW )
-				;
-			switch_state = SWITCH_PRESSED;
+
+			while(pinRead(SW3) == LOW);
+			sw_stav = SW_ZMACKNUTO;
 		}
 	}
-	// vratime stav tlacitka
-	return switch_state;
+	return sw_stav;
 }
-void delay_debounce(void)
+
+void switch_init(void)
 {
-	unsigned long n = 200000L;
-	while ( n-- )
-		;
+	pinMode(SW1, INPUT);
+	pinMode(SW2, INPUT);
+	pinMode(SW3, INPUT);
+}
+
+void delay(void)
+{
+	unsigned long n = 50000L;
+	while ( n-- );
 }
