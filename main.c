@@ -1,180 +1,204 @@
 #include "MKL25Z4.h"
+#include "FreeRTOS.h"
 #include "drv_gpio.h"
-#include "drv_lcd.h"
-#include "stdbool.h"
+#include <stdbool.h>
 
-#define	PWM_CHANNEL_RED		(0)
-#define	PWM_CHANNEL_GREEN	(1)
-#define	PWM_CHANNEL_BLUE	(1)
+#define RED_LED             (8)
+#define	RED_LED_MASK		(1 << RED_LED)
+#define YELLOW_LED          (9)
+#define	YELLOW_LED_MASK		(1 << YELLOW_LED)
+#define GREEN_LED           (10)
+#define	GREEN_LED_MASK		(1 << GREEN_LED)
 
-#define	PWM_PINNUMBER_RED	(18)
-#define	PWM_PINNUMBER_GREEN	(19)
-#define	PWM_PINNUMBER_BLUE	(1)
+#define	RED_LED_TOGGLE()	PTB->PTOR |= RED_LED_MASK
+#define	RED_LED_ON()		PTB->PCOR |= RED_LED_MASK
+#define	RED_LED_OFF()		PTB->PSOR |= RED_LED_MASK
 
-#define SW_NEZMACKNUTO 	(0)
-#define SW_ZMACKNUTO 	(1)
+#define	YELLOW_LED_TOGGLE()	PTB->PTOR |= YELLOW_LED_MASK
+#define	YELLOW_LED_ON()		PTB->PCOR |= YELLOW_LED_MASK
+#define	YELLOW_LED_OFF()	PTB->PSOR |= YELLOW_LED_MASK
 
-void switch_init(void);
-void delay(void);
-int sw1_read(void);
-int sw2_read(void);
-int sw3_read(void);
+#define	GREEN_LED_TOGGLE()	PTB->PTOR |= GREEN_LED_MASK
+#define	GREEN_LED_ON()		PTB->PCOR |= GREEN_LED_MASK
+#define	GREEN_LED_OFF()		PTB->PSOR |= GREEN_LED_MASK
+
+#define SWITCH_PRESSED  	(1)
+#define SWITCH_NOT_PRESSED  (0)
+
+
+bool leds_running = true;
+TaskHandle_t h_RedTask;
+TaskHandle_t h_YellowTask;
+TaskHandle_t h_GreenTask;
+
+
+
+// Cteni stavu tlacitka. Vraci SWITCH_PRESSED nebo SWITCH_NOT_PRESSED
+int switch1_readw(void);
+// Inicializace pinu pro tlacitko
+void switch1_init(void);
+// Zpozdeni pro osetreni zakmitu
+void delay_debounce(void);
+
+void RedTask( void* pvParameters );
+void YellowTask( void* pvParameters );
+void GreenTask( void* pvParameters );
+void SwitchTask( void* pvParameters );
 
 int main(void)
 {
-	GPIO_Initialize();
-	LCD_initialize();
-	switch_init();
+    int sw_state;
 
-	uint32_t tikyzaSekundu = 1;
+    // Initialize GPIO driver
+    GPIO_Initialize();
 
-	SIM->SCGC5 |=  SIM_SCGC5_PORTB_MASK;
-	SIM->SCGC5 |=  SIM_SCGC5_PORTD_MASK;
+    // Initialize switch pin
+    switch1_init();
 
-	SIM->SCGC6 |= SIM_SCGC6_TPM2_MASK;
-	SIM->SCGC6 |= SIM_SCGC6_TPM0_MASK;
+    // Initialize LEDs
+    SIM->SCGC5 |= SIM_SCGC5_PORTB_MASK;
+    PORTB->PCR[RED_LED] = PORT_PCR_MUX(1);
+    RED_LED_OFF();
+    PTB->PDDR |= RED_LED_MASK;
 
-	SIM->SOPT2 &= ~SIM_SOPT2_TPMSRC_MASK;
-	SIM->SOPT2 |= SIM_SOPT2_TPMSRC(2);
+    SIM->SCGC5 |= SIM_SCGC5_PORTB_MASK;
+    PORTB->PCR[YELLOW_LED] = PORT_PCR_MUX(1);
+    YELLOW_LED_OFF();
+    PTB->PDDR |= YELLOW_LED_MASK;
 
-	TPM2->SC = TPM_SC_CMOD(0);
-	while (TPM2->SC & TPM_SC_CMOD_MASK );
+    SIM->SCGC5 |= SIM_SCGC5_PORTB_MASK;
+    PORTB->PCR[GREEN_LED] = PORT_PCR_MUX(1);
+    GREEN_LED_OFF();
+    PTB->PDDR |= GREEN_LED_MASK;
 
-	TPM0->SC = TPM_SC_CMOD(0);
-	while (TPM0->SC & TPM_SC_CMOD_MASK );
+    // Create tasks
+    BaseType_t status1 = xTaskCreate(RedTask, "Red", configMINIMAL_STACK_SIZE, (void *)NULL, tskIDLE_PRIORITY, &h_RedTask);
+    BaseType_t status2 = xTaskCreate(YellowTask, "Yellow", configMINIMAL_STACK_SIZE, (void *)NULL, tskIDLE_PRIORITY + 1, &h_YellowTask);
+    BaseType_t status3 = xTaskCreate(GreenTask, "Green", configMINIMAL_STACK_SIZE, (void *)NULL, tskIDLE_PRIORITY + 2, &h_GreenTask);
+    BaseType_t status4 = xTaskCreate(SwitchTask, "Switch", configMINIMAL_STACK_SIZE, (void *)NULL, tskIDLE_PRIORITY, (xTaskHandle *)NULL);
 
-	TPM2->CNT = 0;
-	TPM2->MOD = 10000;
-	TPM0->CNT = 0;
-	TPM0->MOD = 10000;
+    // Check task creation status
+    if (status1 != pdPASS || status2 != pdPASS || status3 != pdPASS)
+    {
+        while (1)
+        {
+            ; // Error! Probably out of memory
+        }
+    }
 
-	tikyzaSekundu = 100;
+    vTaskStartScheduler(); // Start FreeRTOS scheduler
 
-	TPM2->CONTROLS[PWM_CHANNEL_RED].CnSC = (TPM_CnSC_MSB_MASK | TPM_CnSC_ELSA_MASK);
-	TPM2->CONTROLS[PWM_CHANNEL_GREEN].CnSC = (TPM_CnSC_MSB_MASK | TPM_CnSC_ELSA_MASK);
-	TPM0->CONTROLS[PWM_CHANNEL_BLUE].CnSC = (TPM_CnSC_MSB_MASK | TPM_CnSC_ELSA_MASK);
+    // We should never reach here
+    while (1)
+        ;
 
-	PORTB->PCR[PWM_PINNUMBER_RED] = PORT_PCR_MUX(3);
-	PORTB->PCR[PWM_PINNUMBER_GREEN] = PORT_PCR_MUX(3);
-	PORTD->PCR[PWM_PINNUMBER_BLUE] = PORT_PCR_MUX(4);
-
-	TPM2->CONTROLS[PWM_CHANNEL_RED].CnV = 10 * tikyzaSekundu;
-	TPM2->CONTROLS[PWM_CHANNEL_GREEN].CnV = 10 * tikyzaSekundu;
-	TPM0->CONTROLS[PWM_CHANNEL_BLUE].CnV = 10 * tikyzaSekundu;
-
-	TPM2->SC = ( TPM_SC_CMOD(1)	| TPM_SC_PS(3) );
-	TPM0->SC = ( TPM_SC_CMOD(1)	| TPM_SC_PS(3) );
-
-	uint32_t DutyRed = 0;
-	uint32_t DutyGreen = 0;
-	uint32_t DutyBlue = 0;
-	bool directionUp = true;
-
-	int stav1;
-	int stav2;
-	int stav3;
-
-	while(1)
-	{
-		char string[16];
-
-		TPM2->CONTROLS[PWM_CHANNEL_RED].CnV = DutyRed * tikyzaSekundu;
-		TPM2->CONTROLS[PWM_CHANNEL_GREEN].CnV = DutyGreen * tikyzaSekundu;
-		TPM0->CONTROLS[PWM_CHANNEL_BLUE].CnV = DutyBlue * tikyzaSekundu;
-
-		stav1 = sw1_read();
-		if(stav1 == SW_ZMACKNUTO) {
-			if (DutyRed < 100) DutyRed +=10;
-			else DutyRed = 0;
-		}
-		sprintf(string, "RED:   %3i %%", DutyRed);
-		LCD_set_cursor(1, 1);
-		LCD_puts(string);
-
-		stav2 = sw2_read();
-		if(stav2 == SW_ZMACKNUTO) {
-			if (DutyGreen < 100) DutyGreen +=10;
-			else DutyGreen = 0;
-		}
-		sprintf(string, "BLUE:  %3i %%", DutyGreen);
-		LCD_set_cursor(2, 1);
-		LCD_puts(string);
-
-		stav3 = sw3_read();
-		if(stav3 == SW_ZMACKNUTO) {
-			if (DutyBlue < 100)	DutyBlue +=10;
-			else DutyBlue = 0;
-		}
-		sprintf(string, "GREEN: %3i %%", DutyBlue);
-		LCD_set_cursor(3, 1);
-		LCD_puts(string);
-
-		delay();
-	}
-
-	return 0;
+    return 0;
 }
 
-int sw1_read(void)
+void RedTask( void* pvParameters )
 {
-	int sw_state = SW_NEZMACKNUTO;
-	if (pinRead(SW1) == LOW)
-	{
-		delay();
+	(void) pvParameters; /* parameter not used */
 
-		if (pinRead(SW1) == LOW)
+
+	const TickType_t xFrequency = 500 / portTICK_RATE_MS;
+	TickType_t xLastWakeTime;
+
+  	// Initialise the xLastWakeTime variable with the current time.
+	xLastWakeTime = xTaskGetTickCount();
+	for (;;) {
+
+		// Prepnuti stavu LED
+		RED_LED_TOGGLE();
+		vTaskDelay(400/ portTICK_RATE_MS);
+		// Postaveni do doby dalsiho spusteni s konstantni periodou
+		vTaskDelayUntil(&xLastWakeTime, xFrequency);
+	}
+
+}
+
+void YellowTask( void* pvParameters )
+{
+	(void) pvParameters; /* parameter not used */
+
+	for (;;) {
+		YELLOW_LED_TOGGLE();
+		vTaskDelay(1000 / portTICK_RATE_MS);
+	}
+}
+
+void GreenTask( void* pvParameters )
+{
+	(void) pvParameters;
+
+	for (;;) {
+		GREEN_LED_TOGGLE();
+		vTaskDelay(100 / portTICK_RATE_MS);
+		GREEN_LED_TOGGLE();
+		vTaskDelay(3000 / portTICK_RATE_MS);
+	}
+}
+
+void SwitchTask( void* pvParameters )
+{
+	while (1)
+	{
+		int sw_state;
+		sw_state = switch1_readw();
+
+		if (sw_state == SWITCH_PRESSED)
 		{
+			// Toggle LEDs tasks on button press
+			if (leds_running)
+			{
+				vTaskSuspend(h_RedTask);
+				vTaskSuspend(h_YellowTask);
+				vTaskSuspend(h_GreenTask);
+				leds_running = false;
+			}
+			else
+			{
+				vTaskResume(h_RedTask);
+				vTaskResume(h_YellowTask);
+				vTaskResume(h_GreenTask);
+				leds_running = true;
+			}
 
-			while(pinRead(SW1) == LOW);
-			sw_state = SW_ZMACKNUTO;
+			// Wait for button release to avoid multiple detections
+			while (switch1_readw() == SWITCH_PRESSED)
+				;
 		}
 	}
-	return sw_state;
+}
+void switch1_init(void)
+{
+	pinMode(SW1, INPUT_PULLUP);
 }
 
-int sw2_read(void)
+int switch1_readw(void)
 {
-	int sw_state = SW_NEZMACKNUTO;
-	if (pinRead(SW2) == LOW)
+	int switch_state = SWITCH_NOT_PRESSED;
+	if ( pinRead(SW1) == LOW )
 	{
-		delay();
+		delay_debounce();
 
-		if (pinRead(SW2) == LOW)
+		// znovu zkontrolovat stav tlacitka
+		if ( pinRead(SW1) == LOW )
 		{
-
-			while(pinRead(SW2) == LOW);
-			sw_state = SW_ZMACKNUTO;
+			// cekame na uvolneni tlacitka
+			while( pinRead(SW1) == LOW )
+				;
+			switch_state = SWITCH_PRESSED;
 		}
 	}
-	return sw_state;
+	return switch_state;
 }
 
-int sw3_read(void)
+
+void delay_debounce(void)
 {
-	int sw_stav = SW_NEZMACKNUTO;
-	if (pinRead(SW3) == LOW)
-	{
-		delay();
-
-		if (pinRead(SW3) == LOW)
-		{
-
-			while(pinRead(SW3) == LOW);
-			sw_stav = SW_ZMACKNUTO;
-		}
-	}
-	return sw_stav;
+	unsigned long n = 200000L;
+	while ( n-- )
+		;
 }
 
-void switch_init(void)
-{
-	pinMode(SW1, INPUT);
-	pinMode(SW2, INPUT);
-	pinMode(SW3, INPUT);
-}
 
-void delay(void)
-{
-	unsigned long n = 50000L;
-	while ( n-- );
-}
